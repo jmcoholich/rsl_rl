@@ -40,6 +40,8 @@ from rsl_rl.algorithms import PPO
 from rsl_rl.modules import ActorCritic, ActorCriticRecurrent
 from rsl_rl.env import VecEnv
 
+import wandb
+
 
 class OnPolicyRunner:
 
@@ -47,8 +49,10 @@ class OnPolicyRunner:
                  env: VecEnv,
                  train_cfg,
                  log_dir=None,
-                 device='cpu'):
-
+                 device='cpu',
+                 play=False):
+        if not play:
+            wandb.init(config=train_cfg, project='legged_gym', settings=wandb.Settings(_disable_stats=True))
         self.cfg=train_cfg["runner"]
         self.alg_cfg = train_cfg["algorithm"]
         self.policy_cfg = train_cfg["policy"]
@@ -145,7 +149,7 @@ class OnPolicyRunner:
         self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
         self.tot_time += locs['collection_time'] + locs['learn_time']
         iteration_time = locs['collection_time'] + locs['learn_time']
-
+        wandb_data = {}
         ep_string = f''
         if locs['ep_infos']:
             for key in locs['ep_infos'][0]:
@@ -159,7 +163,8 @@ class OnPolicyRunner:
                     infotensor = torch.cat((infotensor, ep_info[key].to(self.device)))
                 value = torch.mean(infotensor)
                 self.writer.add_scalar('Episode/' + key, value, locs['it'])
-                ep_string += f"""{f'Mean episode {key}:':>{pad}} {value:.4f}\n"""
+                ep_string += f"""{f'Mean episode {key}:':>{pad}} {value:.4f}\n""" 
+                wandb_data[key] = value
         mean_std = self.alg.actor_critic.std.mean()
         fps = int(self.num_steps_per_env * self.env.num_envs / (locs['collection_time'] + locs['learn_time']))
 
@@ -175,6 +180,21 @@ class OnPolicyRunner:
             self.writer.add_scalar('Train/mean_episode_length', statistics.mean(locs['lenbuffer']), locs['it'])
             self.writer.add_scalar('Train/mean_reward/time', statistics.mean(locs['rewbuffer']), self.tot_time)
             self.writer.add_scalar('Train/mean_episode_length/time', statistics.mean(locs['lenbuffer']), self.tot_time)
+
+        wandb_data['Loss/value_function'] = locs['mean_value_loss']
+        wandb_data['Loss/surrogate'] = locs['mean_surrogate_loss']
+        wandb_data['Loss/learning_rate'] = self.alg.learning_rate
+        wandb_data['Policy/mean_noise_std'] = mean_std.item()
+        wandb_data['Perf/total_fps'] = fps
+        wandb_data['Perf/collection time'] = locs['collection_time']
+        wandb_data['Perf/learning_time'] = locs['learn_time']
+        wandb_data['Iteration'] = locs['it']
+        if len(locs['rewbuffer']) > 0:
+            wandb_data['Train/mean_reward'] = statistics.mean(locs['rewbuffer'])
+            wandb_data['Train/mean_episode_length'] = statistics.mean(locs['lenbuffer'])
+            # wandb_data['Train/mean_reward/time'] = statistics.mean(locs['rewbuffer'])
+            # wandb_data['Train/mean_episode_length/time'] = statistics.mean(locs['lenbuffer'])
+        wandb.log(wandb_data)
 
         str = f" \033[1m Learning iteration {locs['it']}/{self.current_learning_iteration + locs['num_learning_iterations']} \033[0m "
 
